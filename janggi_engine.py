@@ -432,6 +432,25 @@ class JanggiBoard:
         self.turn = -self.turn
         return True
 
+    def undo_move(self) -> bool:
+        """직전 1수 무르기 (기물 위치 및 턴 복구)"""
+        if not self.move_history:
+            return False
+        last = self.move_history.pop()
+        if last.get("passed"):
+            self.turn = last["turn"]
+            return True
+
+        fr, fc = last["from"]
+        tr, tc = last["to"]
+        piece = last["piece"]
+        captured = last["captured"]
+
+        self.board[fr][fc] = piece
+        self.board[tr][tc] = captured
+        self.turn = last["turn"]
+        return True
+
     def pass_turn(self):
         """한수 쉼 (Pass)"""
         self.move_history.append({

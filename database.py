@@ -89,3 +89,17 @@ def get_game_moves(game_id: str) -> List[Dict[str, Any]]:
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return rows
+
+def undo_last_move_record(game_id: str, count: int = 2):
+    """DB에서 최근 착수 기록 삭제 (플레이어 1수 + AI 1수 무르기)"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        DELETE FROM game_moves 
+        WHERE id IN (
+            SELECT id FROM game_moves WHERE game_id = ? ORDER BY move_number DESC LIMIT ?
+        )
+    """, (game_id, count))
+    conn.commit()
+    conn.close()
+
