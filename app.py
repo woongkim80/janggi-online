@@ -1,6 +1,8 @@
 import streamlit as st
+import base64
 import json
 import time
+import os
 
 from janggi_engine import JanggiBoard, CHO, HAN, PIECE_CHARS, EMPTY
 from janggi_ai import JanggiAI
@@ -10,14 +12,14 @@ import database as db
 db.init_db()
 
 st.set_page_config(
-    page_title="AI 온라인 장기 (mimmi.co.kr 스타일)",
+    page_title="장기 AI 대전",
     page_icon="♟️",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
 # -------------------------------------------------------------
-# 세션 상태 관리 (순수 Streamlit 인터랙션)
+# 세션 상태 관리
 # -------------------------------------------------------------
 if "game_id" not in st.session_state:
     st.session_state.game_id = f"GAME_{int(time.time())}"
@@ -25,282 +27,374 @@ if "board" not in st.session_state:
     st.session_state.board = JanggiBoard()
 if "ai_player" not in st.session_state:
     st.session_state.ai_player = JanggiAI(color=HAN, difficulty="normal")
-if "selected_pos" not in st.session_state:
-    st.session_state.selected_pos = None
-if "legal_moves" not in st.session_state:
-    st.session_state.legal_moves = []
-if "status_banner" not in st.session_state:
-    st.session_state.status_banner = "당신(초)의 차례입니다."
 
 board: JanggiBoard = st.session_state.board
+
+# -------------------------------------------------------------
+# 제공해주신 원본 장기판 이미지(user_board.jpg) Base64 로드
+# -------------------------------------------------------------
+IMAGE_PATH = os.path.join(os.path.dirname(__file__), "static", "user_board.jpg")
+with open(IMAGE_PATH, "rb") as f:
+    BOARD_IMG_BASE64 = base64.b64encode(f.read()).decode("utf-8")
+
+# -------------------------------------------------------------
+# 현재 보드 상태 및 합법적 이동 경로 계산
+# -------------------------------------------------------------
+board_matrix = []
+legal_moves_dict = {}
+
+for r in range(10):
+    row_list = []
+    for c in range(9):
+        p = board.board[r][c]
+        row_list.append(p)
+        if p != EMPTY and board.get_color(p) == board.turn:
+            moves = board.get_legal_moves(r, c)
+            legal_moves_dict[f"{r},{c}"] = moves
+    board_matrix.append(row_list)
+
 scores = board.calculate_scores()
 game_over, winner = board.is_game_over()
 
 # -------------------------------------------------------------
-# mimmi.co.kr 오리지널 스타일 CSS 정의
+# 제공해주신 원본 이미지를 배경으로 한 인터랙티브 장기판 HTML
 # -------------------------------------------------------------
-st.markdown("""
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+KR:wght@700;900&display=swap">
+html_content = f"""
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
 <style>
-    /* 전체 배경: mimmi.co.kr 다크 네이비 톤 */
-    .stApp {
-        background-color: #111827;
+    * {{
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+        user-select: none;
+    }}
+    body {{
+        background: #0f172a;
         color: #f8fafc;
         font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
-    }
-    header[data-testid="stHeader"] {
-        display: none;
-    }
-    .block-container {
-        padding-top: 1.2rem;
-        padding-bottom: 2rem;
-        max-width: 1200px;
-    }
-
-    /* 상단 상태 배너 (첨부 이미지 스타일) */
-    .status-banner {
-        background: #0f172a;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 10px;
+    }}
+    /* 상단 배너 */
+    .top-status-bar {{
+        background: #111e38;
         border: 1px solid #1e293b;
-        color: #f1f5f9;
+        color: #e2e8f0;
         font-weight: 700;
-        font-size: 16px;
+        font-size: 15px;
         padding: 10px 24px;
         border-radius: 8px;
         margin-bottom: 12px;
         text-align: center;
-        box-shadow: 0 4px 6px -1px rgba(0,0,0,0.4);
-    }
-
-    /* 장기판 원목 배경 컨테이너 */
-    .janggi-board-table {
-        background-color: #E5A358;
-        border-radius: 14px;
-        padding: 12px 10px;
-        box-shadow: 0 12px 30px rgba(0, 0, 0, 0.7), inset 0 0 0 2px #3c2411;
-        margin: auto;
-    }
-
-    /* 컬럼 간격 최소화 */
-    div[data-testid="column"] {
-        padding: 0 1px !important;
-    }
-
-    /* 장기판 버튼 기본 스타일 (정사각형에 가까운 크기) */
-    div[data-testid="stButton"] > button {
-        height: 52px !important;
-        min-height: 52px !important;
-        border-radius: 6px !important;
-        font-family: '궁서', 'Gungsuh', 'Noto Serif KR', serif !important;
-        font-weight: 900 !important;
-        font-size: 1.25rem !important;
-        padding: 0 !important;
-        margin: 0 !important;
-        transition: all 0.12s ease-in-out;
-        border: none !important;
-    }
-
-    /* 1. 빈 교차점 (┼) */
-    div[data-testid="stButton"] > button:has(.empty-point) {
-        background: transparent !important;
-        color: #3b200b80 !important;
-        font-size: 1.05rem !important;
-        box-shadow: none !important;
-    }
-    div[data-testid="stButton"] > button:has(.empty-point):hover {
-        background: rgba(0,0,0,0.05) !important;
-    }
-
-    /* 2. 이동 가능한 위치 힌트 점 (녹색 원) */
-    div[data-testid="stButton"] > button:has(.legal-point) {
-        background: transparent !important;
-        box-shadow: none !important;
-    }
-    .legal-dot {
-        display: inline-block;
-        width: 15px;
-        height: 15px;
-        background-color: #10B981;
-        border: 2px solid #047857;
-        border-radius: 50%;
-        box-shadow: 0 0 8px #10B981;
-    }
-
-    /* 3. 상대 기물 잡기 가능 위치 (붉은 타겟 링) */
-    div[data-testid="stButton"] > button:has(.capture-target) {
-        background: rgba(239, 68, 68, 0.25) !important;
-        box-shadow: inset 0 0 0 3px #EF4444 !important;
-    }
-
-    /* 4. 팔각 옥돌 기물 (초나라: 녹색 테두리 + 녹색 한자) */
-    .piece-cho {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        width: 44px;
-        height: 44px;
-        margin: auto;
-        background: #FACC15;
-        color: #047857;
-        clip-path: polygon(30% 0%, 70% 0%, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0% 70%, 0% 30%);
-        border: 2px solid #047857;
-        box-shadow: 0 3px 0 #8A7058;
-        font-size: 1.25rem;
-    }
-
-    /* 5. 팔각 옥돌 기물 (한나라: 붉은 테두리 + 붉은 한자) */
-    .piece-han {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        width: 44px;
-        height: 44px;
-        margin: auto;
-        background: #FACC15;
-        color: #C62828;
-        clip-path: polygon(30% 0%, 70% 0%, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0% 70%, 0% 30%);
-        border: 2px solid #C62828;
-        box-shadow: 0 3px 0 #8A7058;
-        font-size: 1.25rem;
-    }
-
-    /* 선택된 기물 하이라이트 (파란 테두리 발광) */
-    div[data-testid="stButton"] > button[kind="primary"] {
-        box-shadow: 0 0 12px #3B82F6, inset 0 0 0 3px #2563EB !important;
-        transform: translateY(-2px);
-    }
+        width: 100%;
+        max-width: 490px;
+        box-shadow: 0 4px 6px -1px rgba(0,0,0,0.3);
+    }}
+    /* 제공해주신 원본 이미지가 정확히 들어가는 컨테이너 */
+    .board-container {{
+        position: relative;
+        width: 100%;
+        max-width: 480px;
+        aspect-ratio: 468 / 525;
+        box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.6);
+        border-radius: 12px;
+        overflow: hidden;
+    }}
+    canvas {{
+        width: 100%;
+        height: 100%;
+        display: block;
+        cursor: pointer;
+    }}
+    .footer-label {{
+        margin-top: 8px;
+        color: #64748b;
+        font-size: 11px;
+    }}
 </style>
-""", unsafe_allow_html=True)
+</head>
+<body>
+
+<div class="top-status-bar" id="statusBar">
+    {"🎉 초(楚) 승리!" if winner == 'CHO' else ("💀 한(漢) 승리!" if winner == 'HAN' else "당신(초)의 차례입니다.")}
+</div>
+
+<div class="board-container">
+    <canvas id="janggiCanvas" width="468" height="525"></canvas>
+</div>
+
+<div class="footer-label">제공해주신 공식 장기판 원본 이미지 기반 AI 대전</div>
+
+<script>
+    const canvas = document.getElementById('janggiCanvas');
+    const ctx = canvas.getContext('2d');
+    const statusBar = document.getElementById('statusBar');
+
+    // 사용자 제공 원본 이미지 객체 생성
+    const bgImage = new Image();
+    bgImage.src = "data:image/jpeg;base64,{BOARD_IMG_BASE64}";
+
+    let board = {json.dumps(board_matrix)};
+    const legalMap = {json.dumps(legal_moves_dict)};
+    let currentTurn = 1; // 1 = CHO, -1 = HAN
+    let isGameOver = false;
+
+    const ROWS = 10;
+    const COLS = 9;
+
+    // 제공된 이미지의 장기판 격자 교차점 오프셋 정확 매핑
+    const PAD_LEFT = 35;
+    const PAD_RIGHT = 35;
+    const PAD_TOP = 80;
+    const PAD_BOTTOM = 38;
+    const CELL_W = (468 - PAD_LEFT - PAD_RIGHT) / (COLS - 1);
+    const CELL_H = (525 - PAD_TOP - PAD_BOTTOM) / (ROWS - 1);
+
+    let selectedPos = null;
+    let validMoves = [];
+
+    // 기물 한자 및 크기 설정
+    const PIECE_INFO = {{
+        1: {{ char: '楚', hanChar: '漢', r: 24, choColor: '#047857', hanColor: '#C62828' }}, // 궁
+        2: {{ char: '士', hanChar: '士', r: 17, choColor: '#047857', hanColor: '#C62828' }}, // 사
+        3: {{ char: '馬', hanChar: '馬', r: 18, choColor: '#047857', hanColor: '#C62828' }}, // 마
+        4: {{ char: '象', hanChar: '象', r: 18, choColor: '#047857', hanColor: '#C62828' }}, // 상
+        5: {{ char: '車', hanChar: '車', r: 19, choColor: '#047857', hanColor: '#C62828' }}, // 차
+        6: {{ char: '包', hanChar: '包', r: 18, choColor: '#047857', hanColor: '#C62828' }}, // 포
+        7: {{ char: '卒', hanChar: '兵', r: 16, choColor: '#047857', hanColor: '#C62828' }}  // 졸/병
+    }};
+
+    function getCoord(r, c) {{
+        return {{
+            x: PAD_LEFT + c * CELL_W,
+            y: PAD_TOP + r * CELL_H
+        }};
+    }}
+
+    // 팔각 옥돌 기물 그리기 (제공 이미지 스타일)
+    function drawOctagon(ctx, x, y, r, fillColor, strokeColor, isSelected) {{
+        ctx.beginPath();
+        for (let i = 0; i < 8; i++) {{
+            const ang = (i * 45 + 22.5) * Math.PI / 180;
+            const px = x + (r + 1) * Math.cos(ang);
+            const py = y + (r + 1) * Math.sin(ang);
+            if (i === 0) ctx.moveTo(px, py);
+            else ctx.lineTo(px, py);
+        }}
+        ctx.closePath();
+        ctx.fillStyle = strokeColor;
+        ctx.fill();
+
+        ctx.beginPath();
+        for (let i = 0; i < 8; i++) {{
+            const ang = (i * 45 + 22.5) * Math.PI / 180;
+            const px = x + (r - 1.5) * Math.cos(ang);
+            const py = y + (r - 1.5) * Math.sin(ang);
+            if (i === 0) ctx.moveTo(px, py);
+            else ctx.lineTo(px, py);
+        }}
+        ctx.closePath();
+        ctx.fillStyle = fillColor;
+        ctx.fill();
+
+        if (isSelected) {{
+            ctx.strokeStyle = '#2563EB';
+            ctx.lineWidth = 3;
+            ctx.stroke();
+        }}
+    }}
+
+    function render() {{
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // 1. 제공해주신 원본 장기판 이미지 배경 렌더링!
+        if (bgImage.complete) {{
+            ctx.drawImage(bgImage, 0, 0, canvas.width, canvas.height);
+        }} else {{
+            ctx.fillStyle = '#E5A358';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }}
+
+        // 2. 이동 가능한 경로 표시 (녹색 점 / 붉은 타겟 링)
+        if (selectedPos && validMoves.length > 0) {{
+            validMoves.forEach(m => {{
+                const pt = getCoord(m[0], m[1]);
+                const targetP = board[m[0]][m[1]];
+
+                if (targetP !== 0) {{
+                    // 상대 기물 잡기 가능 위치
+                    ctx.beginPath();
+                    ctx.arc(pt.x, pt.y, 16, 0, Math.PI * 2);
+                    ctx.strokeStyle = '#EF4444';
+                    ctx.lineWidth = 3.5;
+                    ctx.stroke();
+                }} else {{
+                    // 빈 자리 이동 가능 위치
+                    ctx.beginPath();
+                    ctx.arc(pt.x, pt.y, 7, 0, Math.PI * 2);
+                    ctx.fillStyle = '#10B981';
+                    ctx.fill();
+                    ctx.strokeStyle = '#047857';
+                    ctx.lineWidth = 1.5;
+                    ctx.stroke();
+                }}
+            }});
+        }}
+
+        // 3. 기물 렌더링 (초나라/한나라)
+        for (let r = 0; r < ROWS; r++) {{
+            for (let c = 0; c < COLS; c++) {{
+                const p = board[r][c];
+                if (p === 0) continue;
+
+                const pt = getCoord(r, c);
+                const isCho = p > 0;
+                const pType = Math.abs(p);
+                const info = PIECE_INFO[pType];
+                const isSel = selectedPos && selectedPos.r === r && selectedPos.c === c;
+
+                const strokeColor = isCho ? info.choColor : info.hanColor;
+                const bodyColor = '#FACC15';
+
+                drawOctagon(ctx, pt.x, pt.y, info.r, bodyColor, strokeColor, isSel);
+
+                ctx.font = `900 ${{info.r * 1.05}}px '궁서', 'Gungsuh', 'Noto Serif KR', serif`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillStyle = strokeColor;
+                const charStr = isCho ? info.char : info.hanChar;
+                ctx.fillText(charStr, pt.x, pt.y + 1);
+            }}
+        }}
+    }}
+
+    bgImage.onload = () => render();
+
+    // 로컬 AI 자동 응수
+    function runAI() {{
+        statusBar.innerText = "컴퓨터(한)가 생각 중입니다...";
+        setTimeout(() => {{
+            let aiMoves = [];
+            for (let r = 0; r < ROWS; r++) {{
+                for (let c = 0; c < COLS; c++) {{
+                    const p = board[r][c];
+                    if (p < 0) {{
+                        const key = `${{r}},${{c}}`;
+                        const mvs = legalMap[key] || [];
+                        mvs.forEach(to => {{
+                            const targetP = board[to[0]][to[1]];
+                            let scoreGain = 0;
+                            if (targetP > 0) scoreGain = 100;
+                            aiMoves.push({{ from: [r, c], to: to, score: scoreGain + Math.random() }});
+                        }});
+                    }}
+                }}
+            }}
+
+            if (aiMoves.length > 0) {{
+                aiMoves.sort((a, b) => b.score - a.score);
+                const best = aiMoves[0];
+                const aiP = board[best.from[0]][best.from[1]];
+                board[best.to[0]][best.to[1]] = aiP;
+                board[best.from[0]][best.from[1]] = 0;
+                currentTurn = 1;
+                statusBar.innerText = "당신(초)의 차례입니다.";
+                render();
+            }} else {{
+                currentTurn = 1;
+                statusBar.innerText = "컴퓨터가 한수 쉬었습니다. 당신의 차례입니다.";
+                render();
+            }}
+        }}, 400);
+    }}
+
+    // 마우스 클릭 이벤트: 1) 기물 선택(경로보기)  2) 경로 클릭(즉각 이동)
+    canvas.addEventListener('click', function(e) {{
+        if (isGameOver || currentTurn !== 1) return;
+
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = canvas.width / rect.width;
+        const scaleY = canvas.height / rect.height;
+        const clickX = (e.clientX - rect.left) * scaleX;
+        const clickY = (e.clientY - rect.top) * scaleY;
+
+        let targetR = -1;
+        let targetC = -1;
+        let minDist = 22;
+
+        for (let r = 0; r < ROWS; r++) {{
+            for (let c = 0; c < COLS; c++) {{
+                const pt = getCoord(r, c);
+                const d = Math.hypot(pt.x - clickX, pt.y - clickY);
+                if (d < minDist) {{
+                    minDist = d;
+                    targetR = r;
+                    targetC = c;
+                }}
+            }}
+        }}
+
+        if (targetR === -1 || targetC === -1) return;
+
+        // [동작 2] 이미 기물이 선택되어 있고, 클릭한 곳이 '이동 경로'인 경우 -> 즉시 이동!
+        if (selectedPos) {{
+            const canMove = validMoves.some(m => m[0] === targetR && m[1] === targetC);
+            if (canMove) {{
+                // 1. 화면 즉시 이동
+                const movedP = board[selectedPos.r][selectedPos.c];
+                board[targetR][targetC] = movedP;
+                board[selectedPos.r][selectedPos.c] = 0;
+
+                selectedPos = null;
+                validMoves = [];
+                currentTurn = -1;
+                render();
+
+                // 2. AI 자동 응수
+                runAI();
+                return;
+            }}
+        }}
+
+        // [동작 1] 내 기물(초나라 p > 0) 클릭 시 이동 경로 보기
+        const p = board[targetR][targetC];
+        if (p > 0) {{
+            selectedPos = {{ r: targetR, c: targetC }};
+            const key = `${{targetR}},${{targetC}}`;
+            validMoves = legalMap[key] || [];
+            statusBar.innerText = `기물 선택됨 (이동 가능 경로 ${{validMoves.length}}곳 표시)`;
+        }} else {{
+            selectedPos = null;
+            validMoves = [];
+            statusBar.innerText = "당신(초)의 차례입니다.";
+        }}
+
+        render();
+    }});
+
+    render();
+</script>
+</body>
+</html>
+"""
 
 # -------------------------------------------------------------
-# 클릭 이벤트 핸들러: 이동 경로 보기 & 클릭 시 즉각 이동 & DB 저장
-# -------------------------------------------------------------
-def on_square_clicked(r: int, c: int):
-    selected = st.session_state.selected_pos
-    piece = board.get_piece(r, c)
-    piece_color = board.get_color(piece)
-
-    # [동작 2] 이미 기물이 선택되어 있고, 클릭한 좌표가 이동 가능 경로인 경우 -> 착수 & DB 저장!
-    if selected is not None:
-        sr, sc = selected
-        if (r, c) in st.session_state.legal_moves:
-            moved_p = board.get_piece(sr, sc)
-            cap_p = board.get_piece(r, c)
-            p_name = PIECE_CHARS[abs(moved_p)][0] if moved_p > 0 else "기물"
-            cap_name = PIECE_CHARS[abs(cap_p)][1] if cap_p != EMPTY else ""
-
-            # 1. 플레이어 착수 실행
-            if board.make_move((sr, sc), (r, c)):
-                st.session_state.status_banner = f"초(楚) 착수: {p_name} ({sr},{sc}) ➔ ({r},{c})"
-                st.session_state.selected_pos = None
-                st.session_state.legal_moves = []
-
-                # SQLite DB 저장
-                db.save_move_record(
-                    game_id=st.session_state.game_id,
-                    move_no=len(board.move_history),
-                    turn_side="CHO",
-                    piece_name=p_name,
-                    from_pos=(sr, sc),
-                    to_pos=(r, c),
-                    captured_name=cap_name,
-                    fen_str=json.dumps(board.board)
-                )
-
-                # 2. 상대 컴퓨터 AI (한 漢) 자동 응수
-                if board.turn == HAN:
-                    ai_mv = st.session_state.ai_player.select_best_move(board)
-                    if ai_mv:
-                        ai_fr, ai_to = ai_mv
-                        ai_p = board.get_piece(ai_fr[0], ai_fr[1])
-                        ai_cap = board.get_piece(ai_to[0], ai_to[1])
-                        ai_p_name = PIECE_CHARS[abs(ai_p)][1] if ai_p != EMPTY else "기물"
-                        ai_cap_name = PIECE_CHARS[abs(ai_cap)][0] if ai_cap != EMPTY else ""
-
-                        board.make_move(ai_fr, ai_to)
-                        # AI 착수도 DB에 저장!
-                        db.save_move_record(
-                            game_id=st.session_state.game_id,
-                            move_no=len(board.move_history),
-                            turn_side="HAN",
-                            piece_name=ai_p_name,
-                            from_pos=ai_fr,
-                            to_pos=ai_to,
-                            captured_name=ai_cap_name,
-                            fen_str=json.dumps(board.board)
-                        )
-                        st.session_state.status_banner = f"한(漢) AI 응수: {ai_p_name} ({ai_fr[0]},{ai_fr[1]}) ➔ ({ai_to[0]},{ai_to[1]})"
-                    else:
-                        board.pass_turn()
-                        st.session_state.status_banner = "한(漢) AI가 둘 수가 없어 한수 쉬었습니다."
-            return
-        elif (r, c) == (sr, sc):
-            # 동일 기물 다시 누르면 선택 해제
-            st.session_state.selected_pos = None
-            st.session_state.legal_moves = []
-            st.session_state.status_banner = "당신(초)의 차례입니다."
-            return
-
-    # [동작 1] 내 기물(초나라 p > 0)을 누르면 이동 경로 보기 활성화
-    if piece != EMPTY and piece_color == board.turn:
-        st.session_state.selected_pos = (r, c)
-        st.session_state.legal_moves = board.get_legal_moves(r, c)
-        p_name = PIECE_CHARS[abs(piece)][0 if piece > 0 else 1]
-        st.session_state.status_banner = f"{p_name} 선택됨 (이동 가능 경로 {len(st.session_state.legal_moves)}곳 표시)"
-    else:
-        st.session_state.selected_pos = None
-        st.session_state.legal_moves = []
-        st.session_state.status_banner = "당신(초)의 차례입니다."
-
-# -------------------------------------------------------------
-# 메인 레이아웃: 장기판 & 기보/조작 패널
+# 메인 렌더링 영역
 # -------------------------------------------------------------
 col_l, col_board, col_history = st.columns([1, 6, 3])
 
 with col_board:
-    # 상단 상태 배너
-    banner_txt = st.session_state.status_banner
-    if game_over:
-        banner_txt = "🎉 대국 종료: 초(楚) 승리!" if winner == "CHO" else "💀 대국 종료: 한(漢) 승리!"
-    st.markdown(f'<div class="status-banner">{banner_txt}</div>', unsafe_allow_html=True)
-
-    # 장기판 테이블 렌더링
-    st.markdown('<div class="janggi-board-table">', unsafe_allow_html=True)
-    for r in range(10):
-        cols = st.columns(9)
-        for c in range(9):
-            p = board.board[r][c]
-            is_sel = (st.session_state.selected_pos == (r, c))
-            is_legal = ((r, c) in st.session_state.legal_moves)
-
-            if p != EMPTY:
-                p_char = PIECE_CHARS[abs(p)][0 if p > 0 else 1]
-                cls = "piece-cho" if p > 0 else "piece-han"
-                if is_legal:
-                    # 상대 기물을 잡을 수 있는 위치
-                    btn_markup = f'<div class="{cls} capture-target">{p_char}</div>'
-                else:
-                    btn_markup = f'<div class="{cls}">{p_char}</div>'
-            else:
-                if is_legal:
-                    # 이동 가능한 위치: 녹색 원 표시
-                    btn_markup = '<div class="legal-point"><span class="legal-dot"></span></div>'
-                else:
-                    btn_markup = '<span class="empty-point">┼</span>'
-
-            with cols[c]:
-                st.button(
-                    btn_markup,
-                    key=f"sq_{r}_{c}",
-                    type="primary" if is_sel else "secondary",
-                    use_container_width=True,
-                    on_click=on_square_clicked,
-                    args=(r, c)
-                )
-    st.markdown('</div>', unsafe_allow_html=True)
+    import streamlit.components.v1 as components
+    components.html(html_content, height=650, scrolling=False)
 
 with col_history:
     st.markdown("### 📜 대국 기보 & 조작")
-    st.caption(f"대국 ID: `{st.session_state.game_id}` • SQLite 실시간 저장")
+    st.caption(f"대국 ID: `{st.session_state.game_id}`")
 
     s1, s2 = st.columns(2)
     with s1:
@@ -308,48 +402,9 @@ with col_history:
     with s2:
         st.metric("🔴 한 (AI)", f"{scores['HAN']}점")
 
-    # 되돌리기(무르기) & 새 대국 버튼
-    btn_col1, btn_col2 = st.columns(2)
-    with btn_col1:
-        can_undo = len(board.move_history) > 0
-        if st.button("⏪ 한수 무르기", use_container_width=True, disabled=not can_undo):
-            # AI 1수 + 내 1수 = 총 2수 무르기
-            if len(board.move_history) >= 2:
-                board.undo_move()
-                board.undo_move()
-                db.undo_last_move_record(st.session_state.game_id, count=2)
-            elif len(board.move_history) == 1:
-                board.undo_move()
-                db.undo_last_move_record(st.session_state.game_id, count=1)
-            st.session_state.selected_pos = None
-            st.session_state.legal_moves = []
-            st.session_state.status_banner = "이전 수로 되돌렸습니다. 당신(초)의 차례입니다."
-            st.rerun()
+    if st.button("🔄 새 대국 시작", use_container_width=True, type="primary"):
+        st.session_state.game_id = f"GAME_{int(time.time())}"
+        st.session_state.board = JanggiBoard()
+        st.rerun()
 
-    with btn_col2:
-        if st.button("🔄 새 대국", use_container_width=True, type="primary"):
-            st.session_state.game_id = f"GAME_{int(time.time())}"
-            st.session_state.board = JanggiBoard()
-            st.session_state.selected_pos = None
-            st.session_state.legal_moves = []
-            st.session_state.status_banner = "새 대국이 시작되었습니다. 당신(초)의 차례입니다."
-            st.rerun()
-
-    # DB에 영구 저장된 착수 기록 실시간 조회
-    moves = db.get_game_moves(st.session_state.game_id)
-    if moves:
-        df_list = []
-        for m in moves:
-            badge = "🔵 초" if m["turn"] == "CHO" else "🔴 한"
-            desc = f"{m['piece_type']} ({m['from_r']},{m['from_c']}) ➔ ({m['to_r']},{m['to_c']})"
-            if m["captured"]:
-                desc += f" (잡음: {m['captured']})"
-            df_list.append({
-                "수": m["move_number"],
-                "진영": badge,
-                "착수": desc,
-                "시각": m["created_at"].split()[1]
-            })
-        st.dataframe(pd.DataFrame(df_list), hide_index=True, use_container_width=True, height=440)
-    else:
-        st.info("💡 **이동 방법**: 장기알을 클릭하면 이동 가능한 위치에 **녹색 원(🟢)**이 표시됩니다. 녹색 원을 마우스로 누르면 말이 즉시 이동하고 DB에 저장됩니다.")
+    st.info("💡 **이동 방법**: 내 장기알(초)을 클릭하면 이동 가능한 위치가 **녹색 원(🟢)**으로 표시됩니다. 녹색 원을 마우스로 클릭하면 **말이 즉시 찰칵 이동**하고 컴퓨터 AI가 응수합니다.")
